@@ -1,0 +1,17 @@
+# data folders
+data/raw/*
+data/processed/*
+data/external/*
+*.csv
+*.zip
+*.txt
+
+# notebooks checkpoints
+.ipynb_checkpoints/
+
+# python cache
+__pycache__/
+*.pyc
+
+# VS Code settings
+.vscode/
