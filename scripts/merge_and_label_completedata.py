@@ -5,241 +5,304 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-# --- Configuration: Set your data paths and parameters here ---
-EIS_DIR = Path("/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/EIS")        # Directory containing EIS text files
-CAPACITY_DIR = Path("/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/Capacity")  # Directory containing capacity text files
-OUTPUT_FILE = "merged_eis_capacity.csv"  # Output CSV filename
-TARGET_FREQ = 0.01999    # Target frequency (Hz) to extract Re(Z) for Ro calculation
-FREQ_TOL = 1e-6          # Tolerance for matching the target frequency
-MERGE_HOW = "inner"      # How to merge datasets: "inner", "left", or "right"
 
-# 1. Load and process all EIS data files
-print(f"Loading EIS data from directory: {EIS_DIR}")
-if not EIS_DIR.exists():
-    print(f"Error: EIS directory not found: {EIS_DIR}")
-    sys.exit(1)
+alvo_freq = 0.01999
+tol = 1e-6
 
-eis_files = sorted(EIS_DIR.glob("*.txt"))
-print(f"Found {len(eis_files)} EIS text files.")
-if len(eis_files) == 0:
-    sys.exit("No EIS .txt files found in the specified directory.")
+base_dir = Path("/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/EIS")        # Directory containing EIS text files
+print("Does it exist?", base_dir.exists())
+print("Items:", [p.name for p in base_dir.iterdir()][:20])
 
-all_eis_rows = []
-for idx, file_path in enumerate(eis_files, start=1):
-    file_name = file_path.name
-    print(f"  Processing EIS file {idx}/{len(eis_files)}: {file_name}")
+# Search ONLY in the base folder (case-insensitive)
+txt_files = set()
+txt_files |= set(base_dir.glob("*.txt"))
+txt_files |= set(base_dir.glob("*.[Tt][Xx][Tt]"))
+
+txt_files = sorted(str(p) for p in txt_files)
+print("Amount of .txt files:", len(txt_files))
+print("Examples:", txt_files[:5])
+
+if not txt_files:
+    raise FileNotFoundError("No .txt found — check the path in Drive.")
+
+all_rows = []
+
+for file in txt_files:
     try:
-        df_eis = pd.read_csv(file_path, sep='\t', header=None, names=[
-    "time_s", "cycle_number", "freq_Hz", "ReZ_Ohm", "ImZ_Ohm", "Zmod_Ohm", "Phase_deg"
-])
-
+        df = pd.read_csv(file, sep="\t")
     except Exception as e:
-        print(f"    [Warning] Could not read {file_name}: {e}. Skipping this file.")
+        print(f"[WARNING] I couldn't read it {file}: {e}")
         continue
 
-    # Clean and standardize column names
-    df_eis.columns = (df_eis.columns.str.strip()
-                      .str.replace(" ", "_")
-                      .str.replace("(", "", regex=False)
-                      .str.replace(")", "", regex=False)
-                      .str.replace("/", "_"))
-    required_cols = {"cycle_number", "freq_Hz", "ReZ_Ohm"}
-    if not required_cols.issubset(df_eis.columns):
-        missing = required_cols - set(df_eis.columns)
-        print(f"    [Warning] Skipping {file_name}: missing columns {missing}")
+    # Normaliza colunas
+    df.columns = (df.columns
+                  .str.strip()
+                  .str.replace(" ", "_")
+                  .str.replace("(", "", regex=False)
+                  .str.replace(")", "", regex=False)
+                  .str.replace("/", "_"))
+
+    required = {"cycle_number", "freq_Hz", "ReZ_Ohm"}
+    if not required.issubset(df.columns):
+        print(f"[WARNING] Jumping {os.path.basename(file)}: missing {required - set(df.columns)}")
         continue
 
-    # Convert relevant columns to numeric types
-    df_eis["cycle_number"] = pd.to_numeric(df_eis["cycle_number"], errors="coerce")
-    df_eis["freq_Hz"]      = pd.to_numeric(df_eis["freq_Hz"], errors="coerce")
-    df_eis["ReZ_Ohm"]      = pd.to_numeric(df_eis["ReZ_Ohm"], errors="coerce")
-    df_eis = df_eis.dropna(subset=["cycle_number", "freq_Hz", "ReZ_Ohm"])
-    # Convert cycle_number to integer (each EIS measurement corresponds to a whole cycle)
-    df_eis["cycle_number"] = df_eis["cycle_number"].astype(int)
-    if df_eis.empty:
+    # Tipagem
+    df["cycle_number"] = pd.to_numeric(df["cycle_number"], errors="coerce").dropna().astype(int)
+    df["freq_Hz"]      = pd.to_numeric(df["freq_Hz"], errors="coerce")
+    df["ReZ_Ohm"]      = pd.to_numeric(df["ReZ_Ohm"], errors="coerce")
+
+    if df.empty:
         continue
 
-    # Extract metadata (cell number, state, temperature) from filename
-    m_cell = re.search(r"(\d+)(?=\.[^.]+$)", file_name)  # digits before file extension
+    basename = os.path.basename(file)
+    name_wo_ext = os.path.splitext(basename)[0]
+
+    # cell_number: pega TODOS os dígitos antes da extensão (ex.: 02 -> 2, 12 -> 12)
+    m_cell = re.search(r'(\d+)(?=\.[^.]+$)', basename)
     cell_number = int(m_cell.group(1)) if m_cell else None
-    name_parts = os.path.splitext(file_name)[0].split("_")
-    state = name_parts[2] if len(name_parts) >= 3 else None    # e.g., "I" from "EIS_state_I_25C01"
-    m_temp = re.search(r"(\d+)\s*C", file_name)                # e.g., "25" from "25C01"
+
+    # state: 3º token por "_" (EIS_state_I_25C02 -> "I")
+    parts = name_wo_ext.split("_")
+    state = parts[2] if len(parts) >= 3 else None
+
+    # temperatura: número antes de "C" (EIS_state_I_25C02 -> 25)
+    m_temp = re.search(r'(\d+)\s*C', basename)
     temperature_C = int(m_temp.group(1)) if m_temp else None
 
-    # Aggregate one Ro value per cycle: the real impedance at TARGET_FREQ (or nearest if not exact)
-    max_cycle = int(df_eis["cycle_number"].max())
-    for cycle in range(1, max_cycle + 1):
-        cycle_data = df_eis[df_eis["cycle_number"] == cycle]
-        if cycle_data.empty:
-            continue
-        # Find Re(Z) at the target frequency (or closest frequency if exact match not present)
-        rez_value = None
-        freq_series = cycle_data["freq_Hz"]
-        # Check for exact frequency match within tolerance
-        mask = np.isclose(freq_series, TARGET_FREQ, rtol=0, atol=FREQ_TOL)
-        if mask.any():
-            rez_series = cycle_data.loc[mask, "ReZ_Ohm"].dropna()
-            if not rez_series.empty:
-                rez_value = float(rez_series.iloc[0])
-        else:
-            # If no exact match, take the Re(Z) at frequency closest to TARGET_FREQ
-            valid = cycle_data.dropna(subset=["freq_Hz", "ReZ_Ohm"])
-            if not valid.empty:
-                closest_idx = (valid["freq_Hz"] - TARGET_FREQ).abs().idxmin()
-                rez_value = float(valid.loc[closest_idx, "ReZ_Ohm"])
-        if rez_value is None:
-            # Skip if we couldn't find a valid impedance value for this cycle
+    max_cycle = int(df["cycle_number"].max())
+
+    for ciclo in range(1, max_cycle + 1):
+        sub = df[df["cycle_number"] == ciclo]
+        if sub.empty:
             continue
 
-        all_eis_rows.append({
+        f = sub["freq_Hz"]
+        if f.isna().all():
+            continue
+
+        mask = np.isclose(f, alvo_freq, rtol=0, atol=tol)
+        if mask.any():
+            rez_series = sub.loc[mask, "ReZ_Ohm"].dropna()
+            if rez_series.empty:
+                continue
+            rez = rez_series.iloc[0]
+        else:
+            valid = sub[["freq_Hz", "ReZ_Ohm"]].dropna()
+            if valid.empty:
+                continue
+            idx = (valid["freq_Hz"] - alvo_freq).abs().idxmin()
+            rez = valid.loc[idx, "ReZ_Ohm"]
+
+        all_rows.append({
             "cell_number": cell_number,
             "state": state,
-            "temperature_C": temperature_C,
-            "cycle_number": cycle,
-            "Ro": rez_value,
-            "source_file": file_name
+            "T_C": temperature_C,
+            "cycle_number": int(ciclo),
+            "Ro": float(rez),
+            "source_file": basename,
         })
 
-# Create DataFrame from all aggregated EIS results
-new_df_EIS = pd.DataFrame(all_eis_rows)
+new_df_EIS = pd.DataFrame(all_rows)
 if new_df_EIS.empty:
-    sys.exit("Error: No EIS data was aggregated. Please check the input files and format.")
-# Sort EIS data by cell, state, temperature, then cycle number for consistency
-sort_cols = [col for col in ["cell_number", "state", "temperature_C", "cycle_number"] if col in new_df_EIS.columns]
-if sort_cols:
-    new_df_EIS = new_df_EIS.sort_values(sort_cols).reset_index(drop=True)
-print(f"EIS data aggregation complete. Total EIS cycles aggregated: {len(new_df_EIS)}")
+    raise ValueError("No aggregated rows — check columns and contents of .txt files.")
 
-# 2. Load and process all capacity data files
-print(f"\nLoading capacity data from directory: {CAPACITY_DIR}")
-if not CAPACITY_DIR.exists():
-    print(f"Error: Capacity directory not found: {CAPACITY_DIR}")
-    sys.exit(1)
+# Ordena apenas pelo que existir (evita KeyError)
+order_cols = [c for c in ["cell_number", "state", "temperature_C", "cycle_number"] if c in new_df_EIS.columns]
+if order_cols:
+    new_df_EIS = new_df_EIS.sort_values(by=order_cols).reset_index(drop=True)
 
-cap_files = sorted(CAPACITY_DIR.glob("*.txt"))
-print(f"Found {len(cap_files)} capacity text files.")
-if len(cap_files) == 0:
-    sys.exit("No capacity .txt files found in the specified directory.")
+new_df_EIS.head(), new_df_EIS.shape
+print(new_df_EIS.head())
 
-all_capacity_dfs = []
-for idx, file_path in enumerate(cap_files, start=1):
-    file_name = file_path.name
-    print(f"  Processing capacity file {idx}/{len(cap_files)}: {file_name}")
-    try:
-        df_cap = pd.read_csv(file_path, sep="\t")
-    except Exception as e:
-        print(f"    [Warning] Could not read {file_name}: {e}. Skipping this file.")
-        continue
+#now moving on to the cpacity file
+# Get the folder where the Capacity data is
+base_dir = Path("/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/Capacity")
+print("Exist?", base_dir.exists())
+print("Items:", [p.name for p in base_dir.iterdir()][:20])
 
-    # Drop completely empty columns (e.g., those that might appear as Unnamed)
-    df_cap = df_cap.dropna(axis=1, how="all")
-    # Strip whitespace from column names for consistent handling
-    df_cap.columns = df_cap.columns.str.strip()
 
-    # Identify the cycle number and capacity column names
-    cycle_col = None
-    capacity_col = None
-    for col in df_cap.columns:
-        col_lower = col.lower()
-        if cycle_col is None and "cycle" in col_lower and "number" in col_lower:
-            cycle_col = col  # e.g., "cycle number" or combined "cycle number ox/red"
-        if "capacity" in col_lower:
-            capacity_col = col  # e.g., "Capacity/mA.h" or similar
-    # If capacity column wasn't found explicitly, check for an unnamed last column which could hold capacity
-    if capacity_col is None:
-        unnamed_cols = [c for c in df_cap.columns if "unnamed" in c.lower()]
-        if unnamed_cols:
-            capacity_col = unnamed_cols[0]
+# Busca SOMENTE na pasta base (case-insensitive)
+txt_files_cap = set()
+txt_files_cap |= set(base_dir.glob("*.txt"))
+txt_files_cap |= set(base_dir.glob("*.[Tt][Xx][Tt]"))
 
-    if cycle_col is None or capacity_col is None:
-        print(f"    [Warning] Missing 'cycle number' or 'capacity' column in {file_name}. Skipping.")
-        continue
+# Sort the list of files
+txt_files_cap = sorted(str(p) for p in txt_files_cap)
+print("Qtd .txt:", len(txt_files_cap))
+print("Examples:", txt_files_cap[:5])
 
-    # Rename identified columns to standard names
-    df_cap = df_cap.rename(columns={cycle_col: "cycle_number", capacity_col: "capacity"})
-    # Convert cycle number and capacity to numeric
-    df_cap["cycle_number"] = pd.to_numeric(df_cap["cycle_number"], errors="coerce")
-    df_cap["capacity"] = pd.to_numeric(df_cap["capacity"], errors="coerce")
-    df_cap = df_cap.dropna(subset=["cycle_number", "capacity"])
+# Create an empty list to store processed results from all files
+all_capacity_data = []
 
-    # Remove cycle 0 (if present) and any negative cycle numbers, since we focus on cycles 1..N
-    df_cap = df_cap[df_cap["cycle_number"] > 0]
-    if df_cap.empty:
-        print(f"    [Info] No valid cycle data (after removing cycle 0) in {file_name}. Skipping.")
-        continue
+# Loop through each capacity data file
+for file in txt_files_cap:
+    # 1. Read the file into a DataFrame (table-like structure in pandas)
+    # The data is tab-separated, so we use sep='\t'
+    df_cap = pd.read_csv(file, sep='\t')
 
-    # Take only the final measurement of each cycle (last row per cycle)
-    df_cap = df_cap.sort_values("cycle_number")
-    last_cap = df_cap.groupby("cycle_number", as_index=False).tail(1)[["cycle_number", "capacity"]].reset_index(drop=True)
-    if last_cap.empty:
-        print(f"    [Info] No capacity readings found for cycles in {file_name}. Skipping.")
-        continue
+    print(file, df_cap.columns.tolist())
 
-    # Calculate State of Health (SOH) relative to the first cycle's capacity
-    first_cycle = last_cap["cycle_number"].min()
-    first_capacity_value = last_cap.loc[last_cap["cycle_number"] == first_cycle, "capacity"].iloc[0]
-    last_cap["SOH"] = last_cap["capacity"] / first_capacity_value
 
-    # Extract cell number from filename (assumes similar naming convention as EIS files)
-    m_cell = re.search(r"(\d+)(?=\.[^.]+$)", file_name)
-    cell_number = int(m_cell.group(1)) if m_cell else None
-    last_cap["cell_number"] = cell_number
+    # 2. Extract the cell number from the file name
+    # Example: "...Capacity_02.txt" → cell_number = 2
+    match = re.search(r'(\d{1,2})(?=\.txt$)', file)  # capture 1 or 2 digits before ".txt"
+    cell_number = int(match.group(1)) if match else None  # convert to integer if found
+    # ---- 2b. Extract temperature from filename (e.g., 25C) ----
+    # Looks for patterns like "25C", "10C", "5C", etc.
+    m_temp = re.search(r"(\d+)\s*C", file)
+    T_C = int(m_temp.group(1)) if m_temp else None
 
-    # Optionally, print basic info for verification
-    num_cycles = last_cap["cycle_number"].nunique()
-    print(f"    File {file_name}: Cell {cell_number}, Cycles processed = {num_cycles}")
+    # # 3. Rename the columns for trail2 to have clean, easy-to-use names
+    # df_cap = df_cap.rename(columns={
+    #                                 'time/s': 'time',
+    #                                 '                cycle number            ox/red': 'cycle_number',
+    #                                 'Capacity/mA.h': 'ox_red',
+    #                                 'Unnamed: 3': 'capacity'
+    # })
 
-    all_capacity_dfs.append(last_cap)
+        # 3. Rename the columns for trail to have clean, easy-to-use names
+    df_cap = df_cap.rename(columns={
+                                    'time/s': 'time',
+                                    '                cycle number            ox/red': 'cycle_number',
+                                    '                cycle number': 'cycle_number',
+                                    'Capacity/mA.h': 'ox_red',
+                                    '        ox/red': 'ox_red',
+                                    'Unnamed: 3': 'capacity',
+                                    '        Capacity/mA.h':'capacity'
+    })
+     
 
-# Combine all processed capacity data into one DataFrame
-if all_capacity_dfs:
-    final_capacity_df = pd.concat(all_capacity_dfs, ignore_index=True)
-else:
-    final_capacity_df = pd.DataFrame(columns=["cycle_number", "capacity", "SOH", "cell_number"])
-print(f"Capacity data processing complete. Total cycles (all cells): {len(final_capacity_df)}")
-# Preview the first few rows of the combined capacity data
+
+
+    # 4. Show basic info for each file
+    # This helps verify that the cell number and cycle numbers are being read correctly
+    print(f"File: {os.path.basename(file)} | Cell number: {cell_number} | Number of cycles: {df_cap['cycle_number'].nunique()}")
+
+    # 5. Keep only the LAST measurement from each cycle
+    # Reason: Each cycle may have many measurements, but we want the final capacity per cycle
+    last_capacity_per_cycle = (
+        df_cap.groupby('cycle_number', as_index=False)
+        .tail(1)[['cycle_number', 'capacity']]
+        .reset_index(drop=True)
+    )
+
+    # 6. Get the capacity from the first cycle
+    # This will be used as a reference to calculate SOH (State of Health)
+    first_capacity = last_capacity_per_cycle.loc[
+        last_capacity_per_cycle['cycle_number'] == last_capacity_per_cycle['cycle_number'].min(),
+        'capacity'
+    ].iloc[0]
+
+    # 7. Calculate SOH for each cycle
+    # SOH = (capacity in this cycle) / (capacity in first cycle)
+    last_capacity_per_cycle['SOH'] = last_capacity_per_cycle['capacity'] / first_capacity
+    last_capacity_per_cycle['T_C'] = T_C
+
+    # 8. Add the cell number as a column so we know which file each row came from
+    last_capacity_per_cycle['cell_number'] = cell_number
+
+    # 9. Store this processed DataFrame in the list for later combination
+    all_capacity_data.append(last_capacity_per_cycle)
+
+# 10. Combine all processed files into one single DataFrame
+final_capacity_df = pd.concat(all_capacity_data, ignore_index=True)
+
+# 11. Show the first rows of the final table
 print("\nPreview of the final capacity DataFrame:")
 print(final_capacity_df.head())
 
-# 3. Merge EIS data with capacity/SOH data on matching cell and cycle numbers
-print("\nMerging EIS data with capacity data...")
-eis_df = new_df_EIS.copy()
-cap_df = final_capacity_df.copy()
-# Ensure the key columns are integer types for both DataFrames
-eis_df["cell_number"] = pd.to_numeric(eis_df["cell_number"], errors="coerce").astype("Int64")
-cap_df["cell_number"] = pd.to_numeric(cap_df["cell_number"], errors="coerce").astype("Int64")
-if "cycle_number" in cap_df.columns:
-    cap_df["cycle_number"] = pd.to_numeric(cap_df["cycle_number"], errors="coerce").round().astype("Int64")
-if "cycle_number" in eis_df.columns:
-    eis_df["cycle_number"] = pd.to_numeric(eis_df["cycle_number"], errors="coerce").astype("Int64")
-# Drop any rows with missing merge keys
-eis_df = eis_df.dropna(subset=["cell_number", "cycle_number"])
-cap_df = cap_df.dropna(subset=["cell_number", "cycle_number"])
-# Remove duplicate (cell_number, cycle_number) pairs in each table to ensure one-to-one merge
-eis_df = eis_df.sort_values(["cell_number", "cycle_number"])\
-               .drop_duplicates(subset=["cell_number", "cycle_number"], keep="last")
-cap_df = cap_df.sort_values(["cell_number", "cycle_number"])\
-               .drop_duplicates(subset=["cell_number", "cycle_number"], keep="last")
-# Perform the merge
-merged_df = pd.merge(
-    eis_df,
-    cap_df[["cell_number", "cycle_number", "capacity", "SOH"]],
-    on=["cell_number", "cycle_number"],
-    how=MERGE_HOW,
-    validate="one_to_one" if (eis_df.shape[0] == eis_df.drop_duplicates(["cell_number","cycle_number"]).shape[0]
-                              and cap_df.shape[0] == cap_df.drop_duplicates(["cell_number","cycle_number"]).shape[0])
-                              else "many_to_one"
-)
-# Define the desired column order for readability
-preferred_order = ["cell_number", "state", "temperature_C", "cycle_number", "Ro", "capacity", "SOH"]
-merged_cols = [col for col in preferred_order if col in merged_df.columns]
-merged_df = merged_df.sort_values(["cell_number", "cycle_number"]).reset_index(drop=True)[merged_cols]
+#matching the cycle number for merging
+cap = final_capacity_df.copy()
+cap = cap[cap["cycle_number"] > 0]  # remove cycle 0
 
-print(f"Merging complete. Total merged records: {len(merged_df)}")
-print("Sample of merged dataset (first few rows):")
-print(merged_df.head())
+cap["cycle_number"] = pd.to_numeric(cap["cycle_number"], errors="coerce").round().astype("Int64")
 
-# 4. Save the merged dataset with SOH labels to a CSV file
-merged_df.to_csv(OUTPUT_FILE, index=False)
-print(f"Final merged dataset saved to '{OUTPUT_FILE}'.")
+eis = new_df_EIS.copy()
+eis["cycle_number"] = pd.to_numeric(eis["cycle_number"], errors="coerce").astype("Int64")
+
+print(cap.head())
+print(eis.head())
+
+#changing columnd names to match with EIS for merging
+#Merging Dataframes
+#This code defines a function called merge_eis_capacity that joins two tables—one with EIS data (new_df_EIS) 
+#and one with capacity/SOH data (last_capacity_per_cycle)—in an organized and secure way, using the cell number (cell_number) and cycle number (cycle_number) as the joining keys.
+def merge_eis_capacity(
+    eis: pd.DataFrame,
+    cap: pd.DataFrame,
+    how: str = "inner",      # "inner", "left" (EIS as main table), or "right" (capacity as main table)
+    round_cycles: bool = True  # if True, round float cycle numbers (e.g., 1.0 -> 1) before merging
+) -> pd.DataFrame:
+# 1) Work on copies so we never change the original inputs by mistake.
+    eis = eis.copy()
+    cap = cap.copy()
+
+    # 2) Standardize data types for the keys we will join on.
+    #    - Convert cell_number to an integer-like type for both tables.
+    #      (pd.to_numeric(..., errors="coerce") turns bad values into NaN so we can drop them later.)
+    eis["cell_number"] = pd.to_numeric(eis.get("cell_number"), errors="coerce").astype("Int64")
+    cap["cell_number"] = pd.to_numeric(cap.get("cell_number"), errors="coerce").astype("Int64")
+
+    eis["T_C"] = pd.to_numeric(eis.get("T_C"), errors="coerce").astype("Int64")
+    cap["T_C"] = pd.to_numeric(cap.get("T_C"), errors="coerce").astype("Int64")
+
+
+    #    - Convert cycle_number to integers.
+    #      In capacity data, cycle_number might be floats (e.g., 1.0), so we can round first if requested.
+    if "cycle_number" in cap.columns:
+        if round_cycles:
+            cap["cycle_number"] = pd.to_numeric(cap["cycle_number"], errors="coerce").round().astype("Int64")
+        else:
+            cap["cycle_number"] = pd.to_numeric(cap["cycle_number"], errors="coerce").astype("Int64")
+
+    if "cycle_number" in eis.columns:
+        eis["cycle_number"] = pd.to_numeric(eis["cycle_number"], errors="coerce").astype("Int64")
+
+    # 3) Remove rows where the keys are missing (NaN) because those cannot be matched in a merge.
+    eis = eis.dropna(subset=["cell_number", "T_C", "cycle_number"])
+    cap = cap.dropna(subset=["cell_number", "T_C", "cycle_number"])
+
+    # 4) Remove duplicates so that each (cell_number, cycle_number) appears at most once in each table.
+    #    - Sort first so that "keep='last'" keeps the most recent/last occurrence within each group.
+    eis = (
+        eis.sort_values(["cell_number", "T_C", "cycle_number"])
+           .drop_duplicates(subset=["cell_number", "T_C", "cycle_number"], keep="last")
+    )
+
+    cap = (
+        cap.sort_values(["cell_number", "T_C", "cycle_number"])
+           .drop_duplicates(subset=["cell_number", "T_C", "cycle_number"], keep="last")
+    )
+
+    # 5) Perform the merge. We only bring in the capacity/SOH columns from the capacity table.
+    #    - "validate" helps catch unexpected one-to-many relationships.
+    #      If both sides are unique on the key, we use "one_to_one"; otherwise, relax to "many_to_one".
+    #left_unique = eis[["cell_number", "T_C", "cycle_number"]].duplicated().sum() == 0
+    #right_unique = cap[["cell_number", "T_C", "cycle_number"]].duplicated().sum() == 0
+    #relationship = "one_to_one" if (left_unique and right_unique) else "many_to_one"
+
+    cols_from_cap = [c for c in ["cell_number", "T_C", "cycle_number", "capacity", "SOH"] if c in cap.columns]
+
+    merged = pd.merge(
+        eis,
+        cap[["cell_number", "T_C", "cycle_number", "capacity", "SOH"]],
+        on=["cell_number", "T_C", "cycle_number"],
+        how=how
+        #validate=relationship
+    )
+
+    # 6) Choose a column order for readability (only keep columns that actually exist).
+    preferred_order = ["cell_number", "state", "T_C", "cycle_number", "Ro", "capacity", "SOH"]
+    existing = [c for c in preferred_order if c in merged.columns]
+
+    merged = (
+        merged.sort_values(["cell_number", "T_C","cycle_number"])
+              .reset_index(drop=True)[existing]
+    )
+
+    return merged
+
+# --- Example usage (kept in English) ---
+merged_df = merge_eis_capacity(eis, cap, how="left")
+print(merged_df.head(10))
