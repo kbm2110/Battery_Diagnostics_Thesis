@@ -306,3 +306,7 @@ def merge_eis_capacity(
 # --- Example usage (kept in English) ---
 merged_df = merge_eis_capacity(eis, cap, how="left")
 print(merged_df.head(10))
+#merged_df.shape
+#merged_df[merged_df["state"] == "I"]
+#merged_df[["cycle_number", "SOH"]]
+merged_df.to_csv("merged_eis_with_soh.csv", index=False)
