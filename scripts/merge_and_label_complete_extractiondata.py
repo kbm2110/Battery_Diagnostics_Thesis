@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import os
+import re
 import glob
 import numpy as np
 import pandas as pd
+from pathlib import Path
 
 # ============================================================
 # 0. PATHS 
@@ -54,62 +56,85 @@ def parse_capacity_filename(fname: str):
 # 2. LOAD CAPACITY FILES
 # ============================================================
 
-capacity_data = {}
+import os
+import re
+import pandas as pd
+from pathlib import Path
 
-for fname in cap_files:
-    temp, cell = parse_capacity_filename(fname)
+base_dir = Path("/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/Capacity")
+print("Exists?", base_dir.exists())
 
-    # Read without header detection
-    df_cap = pd.read_csv(fname, sep="\t", header=None, comment="#")
+txt_files_cap = sorted([str(p) for p in base_dir.glob("*.txt")])
+print("Total .txt files:", len(txt_files_cap))
 
-    # Case: file has exactly 2 columns (cycle, capacity)
-    if df_cap.shape[1] == 2:
-        df_cap.columns = ["cycle", "capacity"]
-    elif df_cap.shape[1] == 4:
-        df_cap.columns = ["time_s", "cycle", "ox_red", "capacity"]
-        df_cap = df_cap[["cycle", "capacity"]]
-    elif df_cap.shape[1] == 6:
-        df_cap.columns = ["time_s", "cycle", "ox_red", "Ewe_V", "I_mA", "capacity"]
-        df_cap = df_cap[["cycle", "capacity"]]
-    else:
-        # Try using first row as header
-        df_cap.columns = [str(c).strip() for c in df_cap.iloc[0]]
-        df_cap = df_cap[1:]
-        # Normalize names
-        rename_map = {}
-        for col in df_cap.columns:
-            if "cycle" in col.lower():
-                rename_map[col] = "cycle"
-            if "capacity" in col.lower():
-                rename_map[col] = "capacity"
-        df_cap.rename(columns=rename_map, inplace=True)
+all_capacity_data = []
 
-    if "cycle" not in df_cap.columns or "capacity" not in df_cap.columns:
-        print(f"WARNING: Skipping file (no usable columns): {fname}")
-        continue
+for file in txt_files_cap:
+    try:
+        df_cap = pd.read_csv(file, sep="\t", header=None, comment="#", dtype=str)
 
-    df_cap["cycle"] = pd.to_numeric(df_cap["cycle"], errors="coerce").astype("Int64")
-    df_cap["capacity"] = pd.to_numeric(df_cap["capacity"], errors="coerce")
+        print(f"\n📂 Processing: {file}")
+        print(f"Original shape: {df_cap.shape}")
 
-    df_cap = df_cap.dropna(subset=["cycle"]).sort_values("cycle")
+        # 🔍 Drop columns that are completely empty
+        df_cap = df_cap.dropna(axis=1, how="all")
 
-    # Final value per cycle
-    cap_by_cycle = df_cap.groupby("cycle")["capacity"].last().reset_index()
+        print(f"After dropping empty columns: {df_cap.shape}")
 
-    # Compute SOH
-    cap_nonzero = cap_by_cycle[cap_by_cycle["cycle"] > 0]
-    if cap_nonzero["capacity"].notna().any():
-        initial_cap = cap_nonzero["capacity"].iloc[0]
+        # Assign column names based on known patterns
+        col_count = df_cap.shape[1]
+        if col_count == 4:
+            df_cap.columns = ["time_s", "cycle", "ox_red", "capacity"] + [f"extra_{i}" for i in range(4, col_count)]
+        elif col_count == 2:
+            df_cap.columns = ["cycle", "capacity"]
+        elif col_count == 6:
+            df_cap.columns = ["time_s", "cycle", "ox_red", "voltage", "current", "capacity"]
+        else:
+            print(f"⚠️ Unexpected column count ({col_count}). Skipping file: {file}")
+            continue
+
+        # Keep only the relevant ones
+        df_cap = df_cap[["cycle", "capacity"]] if "ox_red" not in df_cap.columns else df_cap[["cycle", "ox_red", "capacity"]]
+
+        # Convert to numeric
+        df_cap["cycle"] = pd.to_numeric(df_cap["cycle"], errors="coerce")
+        df_cap["capacity"] = pd.to_numeric(df_cap["capacity"], errors="coerce")
+
+        df_cap = df_cap.dropna(subset=["cycle", "capacity"])
+
+        # Filter only discharge phase if ox_red is available
+        if "ox_red" in df_cap.columns:
+            df_cap = df_cap[df_cap["ox_red"].astype(str).str.strip() == "0"]
+
+        match = re.search(r'(\d{1,2})(?=\.txt$)', file)
+        cell_number = int(match.group(1)) if match else None
+
+        # Take last capacity value per cycle
+        cap_by_cycle = df_cap.groupby("cycle", as_index=False)["capacity"].last()
+
+        if cap_by_cycle.empty:
+            continue
+
+        initial_cap = cap_by_cycle[cap_by_cycle["cycle"] == 0]["capacity"].iloc[-1]
         cap_by_cycle["SOH"] = cap_by_cycle["capacity"] / initial_cap
-    else:
-        cap_by_cycle["SOH"] = np.nan
+        cap_by_cycle["cell_number"] = cell_number
+        temp, cell = parse_capacity_filename(file)
+        cap_by_cycle["T_C"] = temp
+        cap_by_cycle["cell"] = cell
 
-    cap_by_cycle["T_C"] = temp
-    cap_by_cycle["cell"] = cell
+        
 
-    capacity_data[(temp, cell)] = cap_by_cycle
-print(cap_by_cycle[["cycle", "capacity", "SOH"]].head())
-print(f"Processed capacity for {len(capacity_data)} (temp,cell) pairs")
+        all_capacity_data.append(cap_by_cycle)
+
+    except Exception as e:
+        print(f"❌ Error in {file}: {e}")
+
+# Combine everything
+final_capacity_df = pd.concat(all_capacity_data, ignore_index=True)
+
+print("\n✅ Final capacity table preview:")
+print(final_capacity_df.head())
+
 
 
 # ============================================================
@@ -133,14 +158,21 @@ def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
     R_ct = max(R_total - R_s, 0.0)
     features["R_ct"] = R_ct
 
-    # Main arc frequency
-    if len(ImZ) > 0:
-        peak_idx = ImZ.idxmin()
-        f_peak = freqs.iloc[peak_idx]
-    else:
-        f_peak = np.nan
-    features["f_peak_main"] = f_peak
+    
+    # --- Filter for high-frequency range (semicircle only) ---
+    semicircle_mask = freqs > 1  # Use only frequencies > 1 Hz (you can tune this)
 
+    # Ensure ImZ and freqs are Series and filtered together
+    ImZ_filtered = ImZ[semicircle_mask]
+    freqs_filtered = freqs[semicircle_mask]
+
+    # --- Main arc frequency (f_peak) ---
+    if not ImZ_filtered.empty:
+     peak_idx = ImZ_filtered.idxmin()
+     f_peak = freqs_filtered.loc[peak_idx]
+    else:
+     f_peak = np.nan
+    features["f_peak_main"] = f_peak
     # C_dl estimate
     if pd.notna(f_peak) and R_ct > 0:
         C_dl = 1 / (2 * np.pi * R_ct * f_peak)
@@ -293,7 +325,9 @@ print("Saved eis_features_all_cells.csv")
 
 merged_list = []
 
-for (temp, cell), cap_df in capacity_data.items():
+for final_capacity_df in all_capacity_data:
+    temp = final_capacity_df["T_C"].iloc[0]
+    cell = final_capacity_df["cell"].iloc[0]
 
     eis_sub = eis_features_df[(eis_features_df["T_C"] == temp) &
                               (eis_features_df["cell"] == cell)]
@@ -302,19 +336,21 @@ for (temp, cell), cap_df in capacity_data.items():
         continue
 
     eis_sub = eis_sub.copy()
-    cap_df  = cap_df.copy()
+    final_capacity_df  = final_capacity_df.copy()
 
     # Align cycle numbers
-    if cap_df["cycle"].min() == 0 and eis_sub["cycle"].min() == 1:
+    if final_capacity_df["cycle"].min() == 0 and eis_sub["cycle"].min() == 1:
         eis_sub["cycle_adj"] = eis_sub["cycle"] - 1
-        cap_df["cycle_adj"]  = cap_df["cycle"]
+        final_capacity_df["cycle_adj"]  = final_capacity_df["cycle"]
     else:
         eis_sub["cycle_adj"] = eis_sub["cycle"]
-        cap_df["cycle_adj"]  = cap_df["cycle"]
-
+        final_capacity_df["cycle_adj"]  = final_capacity_df["cycle"]
+    # ⚠ Limit EIS to cycles that exist in capacity data
+    max_valid_cycle = final_capacity_df["cycle"].max()
+    eis_sub = eis_sub[eis_sub["cycle_adj"] <= max_valid_cycle]
     merged = pd.merge(
         eis_sub,
-        cap_df[["cycle_adj", "capacity", "SOH"]],
+        final_capacity_df[["cycle_adj", "capacity", "SOH"]],
         how="left",
         on="cycle_adj"
     )
