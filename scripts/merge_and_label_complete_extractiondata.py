@@ -154,11 +154,12 @@ def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
     R_s = ReZ.iloc[0]
     features["R_s"] = R_s
 
+
     R_total = ReZ.iloc[-1]
     R_ct = max(R_total - R_s, 0.0)
     features["R_ct"] = R_ct
 
-    
+
     # --- Filter for high-frequency range (semicircle only) ---
     semicircle_mask = freqs > 1  # Use only frequencies > 1 Hz (you can tune this)
 
@@ -315,7 +316,24 @@ for fname in eis_files:
         eis_features_list.append(feats)
 
 eis_features_df = pd.DataFrame(eis_features_list)
-eis_features_df.to_csv("eis_features_all_cells.csv", index=False)
+# Example: Print R_s for 25C01, cycle 53
+target_temp = 25
+target_cell = 1
+target_cycle = 54
+
+match_rows = eis_features_df[
+    (eis_features_df["T_C"] == target_temp) &
+    (eis_features_df["cell"] == target_cell) &
+    (eis_features_df["cycle"] == target_cycle)
+]
+
+if not match_rows.empty:
+    print(f"\n🔍 R_s for {target_temp}C0{target_cell}, cycle {target_cycle} is:")
+    print(match_rows[["R_s", "R_ct"]])
+else:
+    print(f"\n⚠️ No match found for {target_temp}C0{target_cell}, cycle {target_cycle}")
+# Save EIS features to CSV
+eis_features_df.to_csv("eis_features_all_cells.csv", index=False, float_format="%.6f")
 print("Saved eis_features_all_cells.csv")
 
 
@@ -365,6 +383,10 @@ if merged_list:
 else:
     merged_df = pd.DataFrame()
     print("⚠ No merged data created.")
+check_final = merged_df[(merged_df["T_C"] == 25) & (merged_df["cell"] == 1) & (merged_df["cycle"] == 54)]
+print("\n✅ Final merged_df check for 25C01 cycle 53:")
+print(check_final[["cycle", "R_s", "R_ct", "capacity", "SOH"]])
+
 
 # Remove duplicate cycle columns
 # ---------------- FIX DUPLICATE CYCLE COLUMNS ----------------
@@ -418,7 +440,7 @@ if not merged_df.empty:
             lambda s: s.interpolate().ffill().bfill()
         )
 
-    merged_df.to_csv("merged_eis_capacity.csv", index=False)
-    print("Saved merged_eis_capacity.csv")
+    merged_df.to_csv("merged_eis_capacity_final.csv", index=False)
+    print("Saved merged_eis_capacity_final.csv")
 
 print("COMPLETE.")
