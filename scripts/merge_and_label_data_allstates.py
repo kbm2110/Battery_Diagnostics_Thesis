@@ -11,7 +11,7 @@ from pathlib import Path
 # ============================================================
 
 capacity_folder = "/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/Capacity"
-eis_folder      = "/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/EIS"
+eis_folder      = "/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/EIS_state_V_IX"
 
 cap_files = glob.glob(os.path.join(capacity_folder, "*.txt"))
 eis_files = glob.glob(os.path.join(eis_folder, "*.txt"))
@@ -440,7 +440,7 @@ if not merged_df.empty:
             lambda s: s.interpolate().ffill().bfill()
         )
 
-    merged_df.to_csv("merged_eis_capacity_final.csv", index=False)
-    print("Saved merged_eis_capacity_final.csv")
+    merged_df.to_csv("merged_eis_capacity_stateV_IX.csv", index=False)
+    print("Saved merged_eis_capacity_stateV_IX.csv")
 
 print("COMPLETE.")
