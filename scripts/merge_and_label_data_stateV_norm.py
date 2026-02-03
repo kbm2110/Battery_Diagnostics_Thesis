@@ -11,7 +11,7 @@ from pathlib import Path
 # ============================================================
 
 capacity_folder = "/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/Capacity"
-eis_folder      = "/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/EIS_state_V_IX"
+eis_folder      = "/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/EIS_state_V"
 
 cap_files = glob.glob(os.path.join(capacity_folder, "*.txt"))
 eis_files = glob.glob(os.path.join(eis_folder, "*.txt"))
@@ -417,30 +417,63 @@ merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]
 
 print("Columns after duplicate removal:", merged_df.columns.tolist())
 
+#=================NORMALISATION=============================
+import numpy as np
+
+# ---- Relative normalization settings ----
+group_cols = ["T_C", "cell"]
+
+resistance_cols = [
+    "R_s", "R_ct", "R_sei",
+    "Zmag_1000Hz", "Zmag_100Hz", "Zmag_10Hz", "Zmag_0.1Hz"
+]
+
+# Make sure cycles are sorted so "first" = beginning of life for that cell/temp
+merged_df = merged_df.sort_values(group_cols + ["cycle"]).copy()
+
+# Relative normalization (divide by first cycle value per (T_C, cell))
+for col in resistance_cols:
+    if col in merged_df.columns:
+        baseline = merged_df.groupby(group_cols)[col].transform("first")
+        merged_df[col + "_rel"] = merged_df[col] / baseline
+    else:
+        print(f"[WARNING] Column missing for normalization: {col}")
+
+# Optional: log-transform C_dl (if present)
+if "C_dl_est" in merged_df.columns:
+    merged_df["C_dl_log"] = np.log10(merged_df["C_dl_est"].replace(0, np.nan))
+
+# Quick sanity check
+print("\nNormalization check (first 5 rows):")
+print(merged_df[[c for c in merged_df.columns if c.endswith("_rel")][:5] + ["T_C","cell","cycle"]].head())
+
+merged_df.to_csv("merged_eis_capacity_final_norm.csv", index=False)
+print("Saved: merged_eis_capacity_final_norm.csv")
+
 
 # ============================================================
 # 6. FINAL CLEANING + INTERPOLATION
 # ============================================================
 
-if not merged_df.empty:
-    merged_df.sort_values(["cell","T_C","cycle"], inplace=True)
+#if not merged_df.empty:
+    #merged_df.sort_values(["cell","T_C","cycle"], inplace=True)
 
     # interpolate capacity & SOH
-    for col in ["capacity", "SOH"]:
-        if col in merged_df.columns:
-            merged_df[col] = merged_df.groupby(["cell","T_C"])[col].transform(
-                lambda s: s.interpolate().ffill().bfill()
-            )
+    #for col in ["capacity", "SOH"]:
+        #if col in merged_df.columns:
+         #   merged_df[col] = merged_df.groupby(["cell","T_C"])[col].transform(
+          #      lambda s: s.interpolate().ffill().bfill()
+            #)
 
     # EIS feature columns
-    eis_cols = [c for c in merged_df.columns if c.startswith(("R_","C_","tail","Zmag","Phase"))]
+    #eis_cols = [c for c in merged_df.columns if c.startswith(("R_","C_","tail","Zmag","Phase"))]
 
-    for col in eis_cols:
-        merged_df[col] = merged_df.groupby(["cell","T_C"])[col].transform(
-            lambda s: s.interpolate().ffill().bfill()
-        )
+    #for col in eis_cols:
+     #   merged_df[col] = merged_df.groupby(["cell","T_C"])[col].transform(
+      #      lambda s: s.interpolate().ffill().bfill()
+    #    )
 
-    merged_df.to_csv("merged_eis_capacity_stateV_IX.csv", index=False)
-    print("Saved merged_eis_capacity_stateV_IX.csv")
+    #merged_df.to_csv("merged_eis_capacity_stateV_IX.csv", index=False)
+    #print("Saved merged_eis_capacity_stateV_IX.csv")
 
 print("COMPLETE.")
