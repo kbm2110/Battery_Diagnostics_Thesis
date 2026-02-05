@@ -11,7 +11,7 @@ from pathlib import Path
 # ============================================================
 
 capacity_folder = "/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/Capacity"
-eis_folder      = "/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/EIS_state_V"
+eis_folder      = "/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/EIS_state_V_IX"
 
 cap_files = glob.glob(os.path.join(capacity_folder, "*.txt"))
 eis_files = glob.glob(os.path.join(eis_folder, "*.txt"))
@@ -155,9 +155,48 @@ def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
     features["R_s"] = R_s
 
 
-    R_total = ReZ.iloc[-1]
-    R_ct = max(R_total - R_s, 0.0)
-    features["R_ct"] = R_ct
+
+    # Assume you already have:
+    # freqs_filtered (Series)
+    # ReZ_filtered (Series)
+    # ImZ_filtered (Series)  # typically negative for capacitive arcs
+
+    # --- Rs estimate ---
+    # Simple and common: minimum Re(Z) after removing inductive points (if you already filtered)
+    #R_s = float(ReZ_filtered.min())
+    #features["R_s"] = R_s
+
+    # --- Peak of main semicircle ---
+    '''if not ImZ_filtered.empty:
+       # If capacitive arc is negative Z'': peak is MOST NEGATIVE => idxmin
+      peak_idx = ImZ_filtered.idxmin()
+
+      f_peak = float(freqs_filtered.loc[peak_idx])
+      Zre_peak = float(ReZ_filtered.loc[peak_idx])
+
+      # Peak method diameter estimate
+      R_ct_peak = max(2.0 * (Zre_peak - R_s), 0.0)
+
+    else:
+      peak_idx = None
+      f_peak = np.nan
+      Zre_peak = np.nan
+    R_ct_peak = np.nan
+
+    features["f_peak_main"] = f_peak
+    features["R_ct"] = R_ct_peak
+
+    # --- Cdl estimate (only valid for ideal RC semicircle; with CPE this becomes "effective") ---
+    if pd.notna(f_peak) and pd.notna(R_ct_peak) and R_ct_peak > 0:
+     C_dl = 1.0 / (2.0 * np.pi * R_ct_peak * f_peak)
+    else:
+      C_dl = np.nan
+
+    features["C_dl_est"] = C_dl
+
+    R_e_peak = ReZ.iloc[-1]
+    R_ct = max(R_e_peak - R_s, 0.0)
+    features["R_ct"] = R_ct'''
 
 
     # --- Filter for high-frequency range (semicircle only) ---
@@ -174,12 +213,21 @@ def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
     else:
      f_peak = np.nan
     features["f_peak_main"] = f_peak
+    # --- Main arc diameter (R_ct) ---
+    Zre_peak = float(ReZ.loc[peak_idx])
+
+      # Peak method diameter estimate
+    R_ct = max(2.0 * (Zre_peak - R_s), 0.0)
+    features["R_ct"] = R_ct
+    
     # C_dl estimate
     if pd.notna(f_peak) and R_ct > 0:
         C_dl = 1 / (2 * np.pi * R_ct * f_peak)
     else:
         C_dl = np.nan
     features["C_dl_est"] = C_dl
+    
+    
 
     # -------- SEI estimate --------
     if len(ReZ) > 5:
@@ -443,12 +491,34 @@ for col in resistance_cols:
 if "C_dl_est" in merged_df.columns:
     merged_df["C_dl_log"] = np.log10(merged_df["C_dl_est"].replace(0, np.nan))
 
+# Replace inf/-inf with NaN
+
+'''features_df = merged_df.copy()
+features_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+invalid_mask = (
+    (features_df["R_s"] <= 0) |
+    (features_df["R_ct"] <= 0) |
+    (features_df["capacity"] <= 0) |
+    (features_df["SOH"] <= 0)
+)
+
+features_df = features_df[~invalid_mask]
+feature_cols = [
+    "R_s", "R_ct", "R_ct_rel", "C_dl_est",
+    "R_sei", "tail_slope", "tail_angle_deg"
+]
+
+features_df = features_df.dropna(subset=feature_cols)
+merged_df = features_df.copy()'''
+
+
 # Quick sanity check
 print("\nNormalization check (first 5 rows):")
 print(merged_df[[c for c in merged_df.columns if c.endswith("_rel")][:5] + ["T_C","cell","cycle"]].head())
 
-merged_df.to_csv("merged_eis_capacity_final_norm.csv", index=False)
-print("Saved: merged_eis_capacity_final_norm.csv")
+merged_df.to_csv("merged_eis_capacity_state_V_IX_norm.csv", index=False)
+print("Saved: merged_eis_capacity_state_V_IX_norm.csv")
 
 
 # ============================================================
