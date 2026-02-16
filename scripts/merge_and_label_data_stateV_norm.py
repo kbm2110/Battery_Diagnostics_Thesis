@@ -11,7 +11,7 @@ from pathlib import Path
 # ============================================================
 
 capacity_folder = "/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/Capacity"
-eis_folder      = "/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/EIS_state_V_IX"
+eis_folder      = "/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/EIS_state_IX"
 
 cap_files = glob.glob(os.path.join(capacity_folder, "*.txt"))
 eis_files = glob.glob(os.path.join(eis_folder, "*.txt"))
@@ -151,98 +151,66 @@ def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
     ImZ   = ImZ.iloc[order].reset_index(drop=True)
 
     # -------- Basic features --------
-    R_s = ReZ.iloc[0]
+    R_s = float(ReZ.iloc[0])
     features["R_s"] = R_s
 
+    # Flag unphysical Rs (drop later at DataFrame level)
+    features["bad_R_s"] = int(R_s > 10)
 
+    # -------- Semicircle peak (main arc) --------
+    semicircle_mask = freqs > 1  # tune if needed
 
-    # Assume you already have:
-    # freqs_filtered (Series)
-    # ReZ_filtered (Series)
-    # ImZ_filtered (Series)  # typically negative for capacitive arcs
+    ReZ_f = ReZ[semicircle_mask]
+    ImZ_f = ImZ[semicircle_mask]
+    f_f   = freqs[semicircle_mask]
 
-    # --- Rs estimate ---
-    # Simple and common: minimum Re(Z) after removing inductive points (if you already filtered)
-    #R_s = float(ReZ_filtered.min())
-    #features["R_s"] = R_s
+    if not ImZ_f.empty:
+        # Capacitive arc usually has negative Im(Z), so peak is most negative (idxmin)
+        peak_idx = ImZ_f.idxmin()
+        f_peak = float(f_f.loc[peak_idx])
+        Zre_peak = float(ReZ_f.loc[peak_idx])
 
-    # --- Peak of main semicircle ---
-    '''if not ImZ_filtered.empty:
-       # If capacitive arc is negative Z'': peak is MOST NEGATIVE => idxmin
-      peak_idx = ImZ_filtered.idxmin()
-
-      f_peak = float(freqs_filtered.loc[peak_idx])
-      Zre_peak = float(ReZ_filtered.loc[peak_idx])
-
-      # Peak method diameter estimate
-      R_ct_peak = max(2.0 * (Zre_peak - R_s), 0.0)
-
+        R_ct = max(2.0 * (Zre_peak - R_s), 0.0)
     else:
-      peak_idx = None
-      f_peak = np.nan
-      Zre_peak = np.nan
-    R_ct_peak = np.nan
+        f_peak = np.nan
+        R_ct = np.nan
 
     features["f_peak_main"] = f_peak
-    features["R_ct"] = R_ct_peak
-
-    # --- Cdl estimate (only valid for ideal RC semicircle; with CPE this becomes "effective") ---
-    if pd.notna(f_peak) and pd.notna(R_ct_peak) and R_ct_peak > 0:
-     C_dl = 1.0 / (2.0 * np.pi * R_ct_peak * f_peak)
-    else:
-      C_dl = np.nan
-
-    features["C_dl_est"] = C_dl
-
-    R_e_peak = ReZ.iloc[-1]
-    R_ct = max(R_e_peak - R_s, 0.0)
-    features["R_ct"] = R_ct'''
-
-
-    # --- Filter for high-frequency range (semicircle only) ---
-    semicircle_mask = freqs > 1  # Use only frequencies > 1 Hz (you can tune this)
-
-    # Ensure ImZ and freqs are Series and filtered together
-    ImZ_filtered = ImZ[semicircle_mask]
-    freqs_filtered = freqs[semicircle_mask]
-
-    # --- Main arc frequency (f_peak) ---
-    if not ImZ_filtered.empty:
-     peak_idx = ImZ_filtered.idxmin()
-     f_peak = freqs_filtered.loc[peak_idx]
-    else:
-     f_peak = np.nan
-    features["f_peak_main"] = f_peak
-    # --- Main arc diameter (R_ct) ---
-    Zre_peak = float(ReZ.loc[peak_idx])
-
-      # Peak method diameter estimate
-    R_ct = max(2.0 * (Zre_peak - R_s), 0.0)
     features["R_ct"] = R_ct
-    
-    # C_dl estimate
-    if pd.notna(f_peak) and R_ct > 0:
-        C_dl = 1 / (2 * np.pi * R_ct * f_peak)
+
+    # C_dl estimate (simple RC approximation)
+    if pd.notna(f_peak) and pd.notna(R_ct) and R_ct > 0:
+        C_dl = 1.0 / (2.0 * np.pi * R_ct * f_peak)
     else:
         C_dl = np.nan
     features["C_dl_est"] = C_dl
-    
-    
 
-    # -------- SEI estimate --------
+    # -------- SEI estimate (single version; intercept + fallback avg of first 2 HF points) --------
     if len(ReZ) > 5:
         hf_n = min(5, len(ReZ))
-        Re_hf = ReZ.iloc[:hf_n]
-        Im_hf = ImZ.iloc[:hf_n]
+        Re_hf = ReZ.iloc[:hf_n].astype(float)
+        Im_hf = ImZ.iloc[:hf_n].astype(float)
 
         A = np.vstack([Im_hf.values, np.ones(hf_n)]).T
         m, b = np.linalg.lstsq(A, Re_hf.values, rcond=None)[0]
-        R_intercept = b
+        R_intercept = float(b)
     else:
         R_intercept = R_s
 
-    features["R_sei"] = max(R_intercept - R_s, 0.0)
-    #features["C_sei_est"] = np.nan
+    rsei_raw = float(R_intercept - R_s)
+    features["R_sei_raw"] = rsei_raw
+
+    # Fallback: if raw <= 0, use average of first two Re(Z) points
+    if rsei_raw <= 0:
+        hf_n_avg = min(2, len(ReZ))
+        Re_avg = float(ReZ.iloc[:hf_n_avg].astype(float).mean())
+        rsei_fallback = Re_avg - R_s
+
+        features["R_sei"] = max(float(rsei_fallback), 0.0)
+        #features["R_sei_method"] = "hf_first2_avg"
+    else:
+        features["R_sei"] = rsei_raw
+        #features["R_sei_method"] = "hf_intercept"
 
     # -------- Warburg tail --------
     if len(ReZ) > 5:
@@ -294,6 +262,208 @@ def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
             features[f"Phase_{f}Hz"] = np.nan
 
     return features
+
+'''def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
+    features = {}
+
+    # Sort high→low frequency
+    order = np.argsort(freqs.values)[::-1]
+    freqs = freqs.iloc[order].reset_index(drop=True)
+    ReZ   = ReZ.iloc[order].reset_index(drop=True)
+    ImZ   = ImZ.iloc[order].reset_index(drop=True)
+
+    # -------- Basic features --------
+    R_s = ReZ.iloc[0]
+    features["R_s"] = R_s
+
+
+
+
+
+    # Assume you already have:
+    # freqs_filtered (Series)
+    # ReZ_filtered (Series)
+    # ImZ_filtered (Series)  # typically negative for capacitive arcs
+
+    # --- Rs estimate ---
+    # Simple and common: minimum Re(Z) after removing inductive points (if you already filtered)
+    #R_s = float(ReZ_filtered.min())
+    #features["R_s"] = R_s
+
+    # --- Peak of main semicircle ---
+    if not ImZ_filtered.empty:
+       # If capacitive arc is negative Z'': peak is MOST NEGATIVE => idxmin
+      peak_idx = ImZ_filtered.idxmin()
+
+      f_peak = float(freqs_filtered.loc[peak_idx])
+      Zre_peak = float(ReZ_filtered.loc[peak_idx])
+
+      # Peak method diameter estimate
+      R_ct_peak = max(2.0 * (Zre_peak - R_s), 0.0)
+
+    else:
+      peak_idx = None
+      f_peak = np.nan
+      Zre_peak = np.nan
+    R_ct_peak = np.nan
+
+    features["f_peak_main"] = f_peak
+    features["R_ct"] = R_ct_peak
+
+    # --- Cdl estimate (only valid for ideal RC semicircle; with CPE this becomes "effective") ---
+    if pd.notna(f_peak) and pd.notna(R_ct_peak) and R_ct_peak > 0:
+     C_dl = 1.0 / (2.0 * np.pi * R_ct_peak * f_peak)
+    else:
+      C_dl = np.nan
+
+    features["C_dl_est"] = C_dl
+
+    R_e_peak = ReZ.iloc[-1]
+    R_ct = max(R_e_peak - R_s, 0.0)
+    features["R_ct"] = R_ct
+
+
+    # --- Filter for high-frequency range (semicircle only) ---
+    semicircle_mask = freqs > 1  # Use only frequencies > 1 Hz (you can tune this)
+
+    # Ensure ImZ and freqs are Series and filtered together
+    ImZ_filtered = ImZ[semicircle_mask]
+    freqs_filtered = freqs[semicircle_mask]
+
+    # --- Main arc frequency (f_peak) ---
+    if not ImZ_filtered.empty:
+     peak_idx = ImZ_filtered.idxmin()
+     f_peak = freqs_filtered.loc[peak_idx]
+    else:
+     f_peak = np.nan
+    features["f_peak_main"] = f_peak
+    # --- Main arc diameter (R_ct) ---
+    Zre_peak = float(ReZ.loc[peak_idx])
+
+      # Peak method diameter estimate
+    R_ct = max(2.0 * (Zre_peak - R_s), 0.0)
+    features["R_ct"] = R_ct
+    
+    # C_dl estimate
+    if pd.notna(f_peak) and R_ct > 0:
+        C_dl = 1 / (2 * np.pi * R_ct * f_peak)
+    else:
+        C_dl = np.nan
+    features["C_dl_est"] = C_dl
+    
+    
+
+    # -------- SEI estimate --------
+    if len(ReZ) > 5:
+        hf_n = min(5, len(ReZ))
+        Re_hf = ReZ.iloc[:hf_n]
+        Im_hf = ImZ.iloc[:hf_n]
+
+        A = np.vstack([Im_hf.values, np.ones(hf_n)]).T
+        m, b = np.linalg.lstsq(A, Re_hf.values, rcond=None)[0]
+        R_intercept = b
+    else:
+        R_intercept = R_s
+    features["R_sei_raw"] = R_intercept - R_s
+    features["R_sei"] = max(features["R_sei_raw"], 0.0)
+    # ---- Primary SEI estimate (unchanged) ----
+    # ---- Primary SEI estimate (your intercept method) ----
+    if len(ReZ) > 5:
+      hf_n = min(5, len(ReZ))
+      Re_hf = ReZ.iloc[:hf_n].astype(float)
+      Im_hf = ImZ.iloc[:hf_n].astype(float)
+
+      A = np.vstack([Im_hf.values, np.ones(hf_n)]).T
+      m, b = np.linalg.lstsq(A, Re_hf.values, rcond=None)[0]
+      R_intercept = float(b)
+    else:
+      R_intercept = float(R_s)
+
+    rsei_raw = float(R_intercept - R_s)
+    features["R_sei_raw"] = rsei_raw
+
+    # ---- Fallback ONLY when negative: use small epsilon based on HF scatter ----
+    # ---- Primary SEI estimate: intercept method ----
+    if len(ReZ) > 5:
+       hf_n = min(5, len(ReZ))
+       Re_hf = ReZ.iloc[:hf_n].astype(float)
+       Im_hf = ImZ.iloc[:hf_n].astype(float)
+
+       A = np.vstack([Im_hf.values, np.ones(hf_n)]).T
+       m, b = np.linalg.lstsq(A, Re_hf.values, rcond=None)[0]
+       R_intercept = float(b)
+    else:
+       R_intercept = float(R_s)
+
+    rsei_raw = float(R_intercept - R_s)
+    features["R_sei_raw"] = rsei_raw
+
+    # ---- Fallback: average of first two HF Re(Z) points ----
+    if rsei_raw <= 0:
+       hf_n_avg = min(2, len(ReZ))
+       Re_avg = float(ReZ.iloc[:hf_n_avg].astype(float).mean())
+       rsei_fallback = Re_avg - float(R_s)
+
+       features["R_sei"] = max(rsei_fallback, 0.0)
+       features["R_sei_method"] = "hf_first2_avg"
+    else:
+       features["R_sei"] = rsei_raw
+       features["R_sei_method"] = "hf_intercept"
+
+
+    #features["R_sei"] = max(R_intercept - R_s, 0.0)
+    #features["C_sei_est"] = np.nan
+
+    # -------- Warburg tail --------
+    if len(ReZ) > 5:
+        lf_n = min(5, len(ReZ))
+        Re_lf = ReZ.iloc[-lf_n:]
+        Im_lf = ImZ.iloc[-lf_n:]
+        negIm = -Im_lf
+
+        A = np.vstack([Re_lf.values, np.ones(lf_n)]).T
+        m, b = np.linalg.lstsq(A, negIm.values, rcond=None)[0]
+        features["tail_slope"] = m
+        features["tail_angle_deg"] = np.degrees(np.arctan(m))
+    else:
+        features["tail_slope"] = np.nan
+        features["tail_angle_deg"] = np.nan
+
+    # -------- Magnitude + Phase at target frequencies --------
+    target_freqs = [1000, 100, 10, 0.1]
+
+    # Sort ascending for interpolation
+    order_asc = np.argsort(freqs.values)
+    fA = freqs.iloc[order_asc].values
+    ReA = ReZ.iloc[order_asc].values
+    ImA = ImZ.iloc[order_asc].values
+    ZA = np.sqrt(ReA**2 + ImA**2)
+    phaseA = np.degrees(np.arctan2(ImA, ReA))
+
+    # Remove repeated frequencies
+    _, unique_idx = np.unique(fA, return_index=True)
+    fA = fA[unique_idx]
+    ZA = ZA[unique_idx]
+    phaseA = phaseA[unique_idx]
+
+    if len(fA) > 1:
+        logf = np.log10(fA)
+        for f in target_freqs:
+            if f <= fA.min() or f >= fA.max():
+                Zt = np.nan
+                Pt = np.nan
+            else:
+                logft = np.log10(f)
+                Zt = np.interp(logft, logf, ZA)
+                Pt = np.interp(logft, logf, phaseA)
+            features[f"Zmag_{f}Hz"] = Zt
+            features[f"Phase_{f}Hz"] = Pt
+    else:
+        for f in target_freqs:
+            features[f"Zmag_{f}Hz"] = np.nan
+            features[f"Phase_{f}Hz"] = np.nan
+
+    return features'''
 
 
 # ============================================================
@@ -364,6 +534,8 @@ for fname in eis_files:
         eis_features_list.append(feats)
 
 eis_features_df = pd.DataFrame(eis_features_list)
+eis_features_df = eis_features_df[eis_features_df["bad_R_s"] == 0].copy()
+
 # Example: Print R_s for 25C01, cycle 53
 target_temp = 25
 target_cell = 1
@@ -517,8 +689,45 @@ merged_df = features_df.copy()'''
 print("\nNormalization check (first 5 rows):")
 print(merged_df[[c for c in merged_df.columns if c.endswith("_rel")][:5] + ["T_C","cell","cycle"]].head())
 
-merged_df.to_csv("merged_eis_capacity_state_V_IX_norm.csv", index=False)
-print("Saved: merged_eis_capacity_state_V_IX_norm.csv")
+merged_df.to_csv("merged_eis_capacity_state_IX_norm.csv", index=False)
+print("Saved: merged_eis_capacity_state_IX_norm.csv")
+
+# --- identifiers / meta columns you want to keep ---
+meta_cols = [
+    "state",     # or "State" depending on your file
+    "T_C",       # temperature
+    "cell",
+    "cycle",
+    "capacity",
+    "SOH"            # or "cycle_number"
+]
+
+# --- your 7 ML features (replace with your exact feature column names) ---
+feature_cols = [
+    "R_s_rel",
+    "R_ct_rel",
+    "R_sei_rel",
+    "C_dl_log",        # or "C_dl_log" depending on what you use
+    "tail_slope",
+    "Zmag_0.1Hz_rel",
+    "Zmag_1000Hz_rel"    # example; replace with the one you need
+]
+
+keep_cols = meta_cols + feature_cols
+df = merged_df.copy()
+missing = [c for c in keep_cols if c not in df.columns]
+if missing:
+    print("Missing columns (check names):", missing)
+    print("Available columns:", list(df.columns))
+else:
+    df_small = df[keep_cols].copy()
+    df_small.to_csv("final_7features_state_IX.csv", index=False)
+    print("Saved: final_7features_state_IX.csv  shape:", df_small.shape)
+
+
+
+
+
 
 
 # ============================================================
