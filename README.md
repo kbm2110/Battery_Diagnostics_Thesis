@@ -5,7 +5,9 @@ Data-Driven Multi-Task Battery Diagnostics: Feature Selection and Prediction Usi
 
 **Institution:** Technische Hochschule Ingolstadt (THI)
 
-**Supervisor:** Prof. Dr. H.-G. Schweiger
+**Supervisor:**  Dr. Carlos Rufino Junior
+
+**Examiner:** Prof. Dr. H.-G. Schweiger
 
 **Period:** 30th October 2025 – 27th April 2026
 
