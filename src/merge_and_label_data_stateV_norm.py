@@ -6,9 +6,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-# ============================================================
 # 0. PATHS 
-# ============================================================
 
 capacity_folder = "/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/Capacity"
 eis_folder      = "/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/EIS_state_IX"
@@ -19,10 +17,7 @@ eis_files = glob.glob(os.path.join(eis_folder, "*.txt"))
 print(f"Found {len(cap_files)} capacity files")
 print(f"Found {len(eis_files)} EIS files")
 
-
-# ============================================================
 # 1. FILENAME PARSERS
-# ============================================================
 
 def parse_temp_cell(tempcell: str):
     """Input '25C04' → (25,4)."""
@@ -51,10 +46,7 @@ def parse_capacity_filename(fname: str):
     temp, cell = parse_temp_cell(parts[-1])
     return temp, cell
 
-
-# ============================================================
 # 2. LOAD CAPACITY FILES
-# ============================================================
 
 import os
 import re
@@ -73,10 +65,10 @@ for file in txt_files_cap:
     try:
         df_cap = pd.read_csv(file, sep="\t", header=None, comment="#", dtype=str)
 
-        print(f"\n📂 Processing: {file}")
+        print(f"\n Processing: {file}")
         print(f"Original shape: {df_cap.shape}")
 
-        # 🔍 Drop columns that are completely empty
+        # Drop columns that are completely empty
         df_cap = df_cap.dropna(axis=1, how="all")
 
         print(f"After dropping empty columns: {df_cap.shape}")
@@ -90,7 +82,7 @@ for file in txt_files_cap:
         elif col_count == 6:
             df_cap.columns = ["time_s", "cycle", "ox_red", "voltage", "current", "capacity"]
         else:
-            print(f"⚠️ Unexpected column count ({col_count}). Skipping file: {file}")
+            print(f" Unexpected column count ({col_count}). Skipping file: {file}")
             continue
 
         # Keep only the relevant ones
@@ -127,19 +119,15 @@ for file in txt_files_cap:
         all_capacity_data.append(cap_by_cycle)
 
     except Exception as e:
-        print(f"❌ Error in {file}: {e}")
+        print(f" Error in {file}: {e}")
 
 # Combine everything
 final_capacity_df = pd.concat(all_capacity_data, ignore_index=True)
 
-print("\n✅ Final capacity table preview:")
+print("\n Final capacity table preview:")
 print(final_capacity_df.head())
 
-
-
-# ============================================================
 # 3. EIS FEATURE EXTRACTION FUNCTION
-# ============================================================
 
 def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
     features = {}
@@ -150,15 +138,15 @@ def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
     ReZ   = ReZ.iloc[order].reset_index(drop=True)
     ImZ   = ImZ.iloc[order].reset_index(drop=True)
 
-    # -------- Basic features --------
+    #  Basic features
     R_s = float(ReZ.iloc[0])
     features["R_s"] = R_s
 
     # Flag unphysical Rs (drop later at DataFrame level)
     features["bad_R_s"] = int(R_s > 10)
 
-    # -------- Semicircle peak (main arc) --------
-    semicircle_mask = freqs > 1  # tune if needed
+    # Semicircle peak (main arc)
+    semicircle_mask = freqs > 1  
 
     ReZ_f = ReZ[semicircle_mask]
     ImZ_f = ImZ[semicircle_mask]
@@ -185,7 +173,7 @@ def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
         C_dl = np.nan
     features["C_dl_est"] = C_dl
 
-    # -------- SEI estimate (single version; intercept + fallback avg of first 2 HF points) --------
+    # SEI estimate (single version; intercept + fallback avg of first 2 HF points)
     if len(ReZ) > 5:
         hf_n = min(5, len(ReZ))
         Re_hf = ReZ.iloc[:hf_n].astype(float)
@@ -212,7 +200,7 @@ def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
         features["R_sei"] = rsei_raw
         #features["R_sei_method"] = "hf_intercept"
 
-    # -------- Warburg tail --------
+    #  Warburg tail
     if len(ReZ) > 5:
         lf_n = min(5, len(ReZ))
         Re_lf = ReZ.iloc[-lf_n:]
@@ -227,7 +215,7 @@ def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
         features["tail_slope"] = np.nan
         features["tail_angle_deg"] = np.nan
 
-    # -------- Magnitude + Phase at target frequencies --------
+    # Magnitude + Phase at target frequencies
     target_freqs = [1000, 100, 10, 0.1]
 
     # Sort ascending for interpolation
@@ -466,10 +454,7 @@ def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
     return features'''
 
 
-# ============================================================
 # 4. PROCESS EIS FILES (CYCLICALLY)
-# ============================================================
-
 eis_features_list = []
 
 for fname in eis_files:
@@ -536,7 +521,6 @@ for fname in eis_files:
 eis_features_df = pd.DataFrame(eis_features_list)
 eis_features_df = eis_features_df[eis_features_df["bad_R_s"] == 0].copy()
 
-# Example: Print R_s for 25C01, cycle 53
 target_temp = 25
 target_cell = 1
 target_cycle = 54
@@ -551,15 +535,12 @@ if not match_rows.empty:
     print(f"\n🔍 R_s for {target_temp}C0{target_cell}, cycle {target_cycle} is:")
     print(match_rows[["R_s", "R_ct"]])
 else:
-    print(f"\n⚠️ No match found for {target_temp}C0{target_cell}, cycle {target_cycle}")
+    print(f"\n No match found for {target_temp}C0{target_cell}, cycle {target_cycle}")
 # Save EIS features to CSV
 eis_features_df.to_csv("eis_features_all_cells.csv", index=False, float_format="%.6f")
 print("Saved eis_features_all_cells.csv")
 
-
-# ============================================================
 # 5. MERGE EIS + CAPACITY
-# ============================================================
 
 merged_list = []
 
@@ -604,12 +585,10 @@ else:
     merged_df = pd.DataFrame()
     print("⚠ No merged data created.")
 check_final = merged_df[(merged_df["T_C"] == 25) & (merged_df["cell"] == 1) & (merged_df["cycle"] == 54)]
-print("\n✅ Final merged_df check for 25C01 cycle 53:")
+print("\n Final merged_df check for 25C01 cycle 53:")
 print(check_final[["cycle", "R_s", "R_ct", "capacity", "SOH"]])
 
-
-# Remove duplicate cycle columns
-# ---------------- FIX DUPLICATE CYCLE COLUMNS ----------------
+#  FIX DUPLICATE CYCLE COLUMNS 
 # Print columns for debugging
 print("Columns before duplicate removal:", merged_df.columns.tolist())
 
@@ -637,10 +616,10 @@ merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]
 
 print("Columns after duplicate removal:", merged_df.columns.tolist())
 
-#=================NORMALISATION=============================
+# NORMALISATION
 import numpy as np
 
-# ---- Relative normalization settings ----
+#  Relative normalization 
 group_cols = ["T_C", "cell"]
 
 resistance_cols = [
@@ -657,9 +636,9 @@ for col in resistance_cols:
         baseline = merged_df.groupby(group_cols)[col].transform("first")
         merged_df[col + "_rel"] = merged_df[col] / baseline
     else:
-        print(f"[WARNING] Column missing for normalization: {col}")
+        print(f" Column missing for normalization: {col}")
 
-# Optional: log-transform C_dl (if present)
+# log-transform C_dl
 if "C_dl_est" in merged_df.columns:
     merged_df["C_dl_log"] = np.log10(merged_df["C_dl_est"].replace(0, np.nan))
 
@@ -686,31 +665,31 @@ merged_df = features_df.copy()'''
 
 
 # Quick sanity check
-print("\nNormalization check (first 5 rows):")
+print("\n Normalization check (first 5 rows):")
 print(merged_df[[c for c in merged_df.columns if c.endswith("_rel")][:5] + ["T_C","cell","cycle"]].head())
 
 merged_df.to_csv("merged_eis_capacity_state_IX_norm.csv", index=False)
 print("Saved: merged_eis_capacity_state_IX_norm.csv")
 
-# --- identifiers / meta columns you want to keep ---
+# identifiers / meta columns 
 meta_cols = [
-    "state",     # or "State" depending on your file
+    "state",     
     "T_C",       # temperature
     "cell",
     "cycle",
     "capacity",
-    "SOH"            # or "cycle_number"
+    "SOH"          
 ]
 
-# --- your 7 ML features (replace with your exact feature column names) ---
+#  ML features
 feature_cols = [
     "R_s_rel",
     "R_ct_rel",
     "R_sei_rel",
-    "C_dl_log",        # or "C_dl_log" depending on what you use
+    "C_dl_log",        
     "tail_slope",
     "Zmag_0.1Hz_rel",
-    "Zmag_1000Hz_rel"    # example; replace with the one you need
+    "Zmag_1000Hz_rel"    
 ]
 
 keep_cols = meta_cols + feature_cols
@@ -725,15 +704,7 @@ else:
     print("Saved: final_7features_state_IX.csv  shape:", df_small.shape)
 
 
-
-
-
-
-
-# ============================================================
 # 6. FINAL CLEANING + INTERPOLATION
-# ============================================================
-
 #if not merged_df.empty:
     #merged_df.sort_values(["cell","T_C","cycle"], inplace=True)
 

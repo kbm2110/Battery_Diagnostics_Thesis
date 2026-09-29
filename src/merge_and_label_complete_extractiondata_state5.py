@@ -6,10 +6,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-# ============================================================
 # 0. PATHS 
-# ============================================================
-
 capacity_folder = "/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/Capacity"
 eis_folder      = "/Users/yaswanthkanagarla/Desktop/Master_Thesis/BD_code/Battery_Diagnostics_Thesis/data/EIS_state_V"
 
@@ -19,10 +16,7 @@ eis_files = glob.glob(os.path.join(eis_folder, "*.txt"))
 print(f"Found {len(cap_files)} capacity files")
 print(f"Found {len(eis_files)} EIS files")
 
-
-# ============================================================
 # 1. FILENAME PARSERS
-# ============================================================
 
 def parse_temp_cell(tempcell: str):
     """Input '25C04' → (25,4)."""
@@ -51,10 +45,7 @@ def parse_capacity_filename(fname: str):
     temp, cell = parse_temp_cell(parts[-1])
     return temp, cell
 
-
-# ============================================================
 # 2. LOAD CAPACITY FILES
-# ============================================================
 
 import os
 import re
@@ -73,15 +64,15 @@ for file in txt_files_cap:
     try:
         df_cap = pd.read_csv(file, sep="\t", header=None, comment="#", dtype=str)
 
-        print(f"\n📂 Processing: {file}")
+        print(f"\n Processing: {file}")
         print(f"Original shape: {df_cap.shape}")
 
-        # 🔍 Drop columns that are completely empty
+        # Droping the columns that are completely empty
         df_cap = df_cap.dropna(axis=1, how="all")
 
         print(f"After dropping empty columns: {df_cap.shape}")
 
-        # Assign column names based on known patterns
+        # Assigning the column names based on known patterns
         col_count = df_cap.shape[1]
         if col_count == 4:
             df_cap.columns = ["time_s", "cycle", "ox_red", "capacity"] + [f"extra_{i}" for i in range(4, col_count)]
@@ -90,7 +81,7 @@ for file in txt_files_cap:
         elif col_count == 6:
             df_cap.columns = ["time_s", "cycle", "ox_red", "voltage", "current", "capacity"]
         else:
-            print(f"⚠️ Unexpected column count ({col_count}). Skipping file: {file}")
+            print(f" Unexpected column count ({col_count}). Skipping file: {file}")
             continue
 
         # Keep only the relevant ones
@@ -127,30 +118,26 @@ for file in txt_files_cap:
         all_capacity_data.append(cap_by_cycle)
 
     except Exception as e:
-        print(f"❌ Error in {file}: {e}")
+        print(f"Error in {file}: {e}")
 
 # Combine everything
 final_capacity_df = pd.concat(all_capacity_data, ignore_index=True)
 
-print("\n✅ Final capacity table preview:")
+print(" Final capacity table preview:")
 print(final_capacity_df.head())
 
-
-
-# ============================================================
 # 3. EIS FEATURE EXTRACTION FUNCTION
-# ============================================================
 
 def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
     features = {}
 
-    # Sort high→low frequency
+    # Sort high to low frequency
     order = np.argsort(freqs.values)[::-1]
     freqs = freqs.iloc[order].reset_index(drop=True)
     ReZ   = ReZ.iloc[order].reset_index(drop=True)
     ImZ   = ImZ.iloc[order].reset_index(drop=True)
 
-    # -------- Basic features --------
+    # Basic features 
     R_s = ReZ.iloc[0]
     features["R_s"] = R_s
 
@@ -160,14 +147,14 @@ def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
     features["R_ct"] = R_ct
 
 
-    # --- Filter for high-frequency range (semicircle only) ---
-    semicircle_mask = freqs > 1  # Use only frequencies > 1 Hz (you can tune this)
+    # Filter for high-frequency range (semicircle only)
+    semicircle_mask = freqs > 1  # Use only frequencies > 1 Hz 
 
     # Ensure ImZ and freqs are Series and filtered together
     ImZ_filtered = ImZ[semicircle_mask]
     freqs_filtered = freqs[semicircle_mask]
 
-    # --- Main arc frequency (f_peak) ---
+    #  Main arc frequency (f_peak)
     if not ImZ_filtered.empty:
      peak_idx = ImZ_filtered.idxmin()
      f_peak = freqs_filtered.loc[peak_idx]
@@ -181,7 +168,7 @@ def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
         C_dl = np.nan
     features["C_dl_est"] = C_dl
 
-    # -------- SEI estimate --------
+    #  SEI estimate
     if len(ReZ) > 5:
         hf_n = min(5, len(ReZ))
         Re_hf = ReZ.iloc[:hf_n]
@@ -196,7 +183,7 @@ def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
     features["R_sei"] = max(R_intercept - R_s, 0.0)
     #features["C_sei_est"] = np.nan
 
-    # -------- Warburg tail --------
+    # Warburg tail
     if len(ReZ) > 5:
         lf_n = min(5, len(ReZ))
         Re_lf = ReZ.iloc[-lf_n:]
@@ -211,7 +198,7 @@ def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
         features["tail_slope"] = np.nan
         features["tail_angle_deg"] = np.nan
 
-    # -------- Magnitude + Phase at target frequencies --------
+    # Magnitude and Phase at target frequencies
     target_freqs = [1000, 100, 10, 0.1]
 
     # Sort ascending for interpolation
@@ -247,11 +234,7 @@ def extract_eis_features(freqs: pd.Series, ReZ: pd.Series, ImZ: pd.Series):
 
     return features
 
-
-# ============================================================
 # 4. PROCESS EIS FILES (CYCLICALLY)
-# ============================================================
-
 eis_features_list = []
 
 for fname in eis_files:
@@ -316,7 +299,6 @@ for fname in eis_files:
         eis_features_list.append(feats)
 
 eis_features_df = pd.DataFrame(eis_features_list)
-# Example: Print R_s for 25C01, cycle 53
 target_temp = 25
 target_cell = 1
 target_cycle = 54
@@ -328,18 +310,15 @@ match_rows = eis_features_df[
 ]
 
 if not match_rows.empty:
-    print(f"\n🔍 R_s for {target_temp}C0{target_cell}, cycle {target_cycle} is:")
+    print(f"\n R_s for {target_temp}C0{target_cell}, cycle {target_cycle} is:")
     print(match_rows[["R_s", "R_ct"]])
 else:
-    print(f"\n⚠️ No match found for {target_temp}C0{target_cell}, cycle {target_cycle}")
+    print(f"\n No match found for {target_temp}C0{target_cell}, cycle {target_cycle}")
 # Save EIS features to CSV
 eis_features_df.to_csv("eis_features_all_cells.csv", index=False, float_format="%.6f")
 print("Saved eis_features_all_cells.csv")
 
-
-# ============================================================
 # 5. MERGE EIS + CAPACITY
-# ============================================================
 
 merged_list = []
 
@@ -356,14 +335,14 @@ for final_capacity_df in all_capacity_data:
     eis_sub = eis_sub.copy()
     final_capacity_df  = final_capacity_df.copy()
 
-    # Align cycle numbers
+    # Aligning the cycle numbers
     if final_capacity_df["cycle"].min() == 0 and eis_sub["cycle"].min() == 1:
         eis_sub["cycle_adj"] = eis_sub["cycle"] - 1
         final_capacity_df["cycle_adj"]  = final_capacity_df["cycle"]
     else:
         eis_sub["cycle_adj"] = eis_sub["cycle"]
         final_capacity_df["cycle_adj"]  = final_capacity_df["cycle"]
-    # ⚠ Limit EIS to cycles that exist in capacity data
+    # Limit EIS to cycles that exist in capacity data
     max_valid_cycle = final_capacity_df["cycle"].max()
     eis_sub = eis_sub[eis_sub["cycle_adj"] <= max_valid_cycle]
     merged = pd.merge(
@@ -384,24 +363,21 @@ else:
     merged_df = pd.DataFrame()
     print("⚠ No merged data created.")
 check_final = merged_df[(merged_df["T_C"] == 25) & (merged_df["cell"] == 1) & (merged_df["cycle"] == 54)]
-print("\n✅ Final merged_df check for 25C01 cycle 53:")
+print("\n Final merged_df check for 25C01 cycle 53:")
 print(check_final[["cycle", "R_s", "R_ct", "capacity", "SOH"]])
 
-
-# Remove duplicate cycle columns
-# ---------------- FIX DUPLICATE CYCLE COLUMNS ----------------
+# FIX DUPLICATE CYCLE COLUMNS
 # Print columns for debugging
 print("Columns before duplicate removal:", merged_df.columns.tolist())
 
-# Step 1: Remove exact duplicate column names
+# Removing the exact duplicate column names
 merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]
 
-# Step 2: Now check for multiple 'cycle' columns (cycle_x, cycle_y, cycle)
+# checking for multiple 'cycle' columns (cycle_x, cycle_y, cycle)
 cycle_cols = [c for c in merged_df.columns if "cycle" in c]
 
 print("Cycle-related columns found:", cycle_cols)
 
-# Priority: keep 'cycle_adj' or 'cycle' if present
 if "cycle_adj" in merged_df.columns and "cycle" in merged_df.columns:
     # Remove old cycle
     merged_df.drop(columns=["cycle"], inplace=True)
@@ -412,16 +388,13 @@ elif "cycle_x" in merged_df.columns and "cycle_y" in merged_df.columns:
     merged_df.drop(columns=["cycle_y"], inplace=True)
     merged_df.rename(columns={"cycle_x": "cycle"}, inplace=True)
 
-# Step 3: After cleanup, ensure only 1 cycle column exists
+# ensuring only 1 cycle column exists
 merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]
 
 print("Columns after duplicate removal:", merged_df.columns.tolist())
 
 
-# ============================================================
-# 6. FINAL CLEANING + INTERPOLATION
-# ============================================================
-
+# 6. FINAL CLEANING AND INTERPOLATION
 if not merged_df.empty:
     merged_df.sort_values(["cell","T_C","cycle"], inplace=True)
 
